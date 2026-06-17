@@ -1,0 +1,29 @@
+# --- Secrets & generated credentials (NEVER commit) ---
+.env
+.env.local
+.env.*.local
+.deployment-secrets
+*.secret
+secrets/
+
+# --- Persistent runtime data ---
+data/
+/opt/swarmclaw/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Node / build artifacts (if building locally) ---
+node_modules/
+dist/
+build/
+.cache/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

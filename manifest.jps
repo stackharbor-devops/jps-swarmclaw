@@ -1,0 +1,161 @@
+---
+# =============================================================================
+#  SwarmClaw — Stack Harbor JPS package
+#  Deploys SwarmClaw (self-hosted AI agent runtime & multi-agent framework)
+#  onto a single Virtuozzo/Jelastic Docker Engine node, via Docker Compose.
+#
+#  Import (Virtuozzo/Jelastic Developer UI):
+#     Import  ->  URL  ->  paste the RAW URL of this manifest.jps  ->  Import
+#
+#  IMPORTANT: set `baseUrl` below to the RAW base of the repo that hosts this
+#  file, so the platform can fetch scripts/*.sh during installation.
+# =============================================================================
+type: install
+version: "1.0.0"
+name: SwarmClaw
+id: swarmclaw
+
+# Raw base URL of THIS repository (no trailing slash). The installer fetches
+# scripts/install.sh (and siblings) from "${baseUrl}/scripts/...".
+# Set for stackharbor-devops/jps-swarmclaw. If you fork/rename, update this to
+# https://raw.githubusercontent.com/<owner>/<repo>/<branch>.
+baseUrl: https://raw.githubusercontent.com/stackharbor-devops/jps-swarmclaw/main
+
+description: |
+  SwarmClaw is a self-hosted AI agent runtime and multi-agent framework. This
+  package provisions one Docker Engine node, installs SwarmClaw with Docker
+  Compose, generates unique credentials, persists data across reboots, exposes
+  the app on port 3456, and emails the deployment details to the customer.
+
+# Optional branding — add images/swarmclaw.svg to the repo and uncomment:
+# logo: /images/swarmclaw.svg
+
+# ---------------------------------------------------------------------------
+# Topology: a single Docker Engine CE host (root cmd access, runs docker compose).
+# ---------------------------------------------------------------------------
+nodes:
+  - nodeType: dockerengine      # Docker Engine CE host. If your platform lacks it,
+                                # switch to `nodeType: vps` (Ubuntu) — install.sh
+                                # will install Docker/Compose itself.
+    nodeGroup: cp
+    displayName: SwarmClaw
+    count: 1
+    fixedCloudlets: 1           # ~128 MiB reserved
+    flexibleCloudlets: 32       # scales up to ~4 GiB on demand (covers image build)
+    extip: true                 # request a public IPv4 so http://<ip>:3456 is reachable.
+                                # NOTE: key may be `externalIp: true` on some versions.
+                                # No-public-IP alternative: drop this and expose 3456
+                                # via Endpoints (api: environment.binder.AddEndPoint) —
+                                # see README "Exposing SwarmClaw".
+    skipNodeEmails: true        # suppress per-node platform emails; we send our own.
+
+# ---------------------------------------------------------------------------
+# Globals. On-node generation (openssl) is authoritative; these placeholders are
+# overwritten by setGlobals after the installer writes /opt/swarmclaw/.deployment-secrets.
+# ---------------------------------------------------------------------------
+globals:
+  ACCESS_KEY: pending
+  CREDENTIAL_SECRET: pending
+  SWARMCLAW_URL: pending
+
+# ---------------------------------------------------------------------------
+# Install flow.
+# ---------------------------------------------------------------------------
+onInstall:
+  - log: "Deploying SwarmClaw to environment ${env.name}"
+  - installSwarmClaw
+  - captureCredentials
+  - captureUrl
+  - emailCustomer
+
+actions:
+  # 1) Bootstrap: fetch the installer and run the full deploy on the node.
+  #    Only ${baseUrl} is a JPS placeholder here — all real logic lives in the
+  #    .sh files (which the placeholder engine never parses), avoiding ${var} clashes.
+  installSwarmClaw:
+    - cmd[cp]: |-
+        set -euo pipefail
+        curl -fsSL '${baseUrl}/scripts/install.sh' -o /tmp/swarmclaw-install.sh
+        chmod +x /tmp/swarmclaw-install.sh
+        SWARMCLAW_BASE_URL='${baseUrl}' \
+        SWARMCLAW_APP_DIR='/opt/swarmclaw' \
+        SWARMCLAW_PORT='3456' \
+        /bin/bash /tmp/swarmclaw-install.sh 2>&1 | tee -a /var/log/swarmclaw-install.log
+      sayYes: true
+
+  # 2) Read the generated credentials back into JPS globals for the email/output.
+  #    (cmd stdout -> response.responses[1].out -> setGlobals.)
+  captureCredentials:
+    - cmd[cp]: grep -E '^ACCESS_KEY=' /opt/swarmclaw/.deployment-secrets | head -n1 | cut -d= -f2- | tr -d '\r\n'
+    - setGlobals:
+        ACCESS_KEY: ${response.responses[1].out}
+    - cmd[cp]: grep -E '^CREDENTIAL_SECRET=' /opt/swarmclaw/.deployment-secrets | head -n1 | cut -d= -f2- | tr -d '\r\n'
+    - setGlobals:
+        CREDENTIAL_SECRET: ${response.responses[1].out}
+
+  # 3) Build the public URL from the node's external IP.
+  #    Alt placeholder on some versions: ${nodes.cp.first.extIP}
+  captureUrl:
+    - setGlobals:
+        SWARMCLAW_URL: http://${nodes.cp.first.extIPs[1]}:3456
+
+  # 4) Branded customer email with the exact required subject.
+  #    Uses the official jelastic-jps email pattern (message.email.Send).
+  emailCustomer:
+    - api:
+        method: message.email.Send
+        to: ${user.email}
+        subject: Your SwarmClaw environment is ready
+        body: |
+          <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1b1b2f;line-height:1.6">
+            <p>Hello,</p>
+            <p>Your <strong>SwarmClaw</strong> environment has been deployed successfully.</p>
+            <table cellpadding="6" style="border-collapse:collapse">
+              <tr><td><strong>Environment&nbsp;name</strong></td><td>${env.name}</td></tr>
+              <tr><td><strong>Application&nbsp;URL</strong></td><td><a href="${globals.SWARMCLAW_URL}">${globals.SWARMCLAW_URL}</a></td></tr>
+              <tr><td><strong>Access&nbsp;Key</strong></td><td><code>${globals.ACCESS_KEY}</code></td></tr>
+              <tr><td><strong>Credential&nbsp;Secret</strong></td><td><code>${globals.CREDENTIAL_SECRET}</code></td></tr>
+            </table>
+            <p><strong>Save these credentials now.</strong> They were generated uniquely for your
+               deployment and <strong>may not be recoverable later</strong>.</p>
+            <p><strong>Get started:</strong> open the Application URL above, then configure your
+               providers, agents, <strong>Hermes Agent</strong> integration, tools, schedules and
+               credentials directly in the SwarmClaw UI. (Hermes connects through its
+               OpenAI-compatible <code>/v1</code> endpoint — local or remote.)</p>
+            <p>Need help? Stack Harbor support is here for you — just reply to this email.</p>
+            <p>— The Stack Harbor Team</p>
+          </div>
+
+# ---------------------------------------------------------------------------
+# Dashboard success output (shown in the UI after install).
+# NOTE: depending on platform/version, this success text may ALSO be auto-emailed
+# to the environment owner. The branded `emailCustomer` action above is the
+# authoritative notification (it controls the exact subject). If you receive two
+# emails, remove `emailCustomer`, or keep only this `success` block.
+# ---------------------------------------------------------------------------
+success:
+  text: |
+    ### 🐾 SwarmClaw is ready
+
+    Your environment **${env.name}** is up and running on a single Docker Engine node.
+
+    | | |
+    |---|---|
+    | **Application URL** | ${globals.SWARMCLAW_URL} |
+    | **Access Key** | `${globals.ACCESS_KEY}` |
+
+    **Next:** open the URL, authenticate with your Access Key, then configure
+    providers, agents, **Hermes Agent**, tools and schedules from the SwarmClaw UI.
+
+    **On the node (`/opt/swarmclaw`):**
+    - `.env.local` — runtime config incl. Access Key & Credential Secret (`chmod 600`)
+    - `.deployment-secrets` — authoritative copy of generated secrets (`chmod 600`)
+    - `data/` — persistent application data (survives restarts & reboots)
+
+    A copy of these details was emailed to **${user.email}**. Save your credentials now —
+    they are unique to this deployment and **may not be recoverable later**.
+
+    **Manage on the node:**
+    `bash /opt/swarmclaw/scripts/update.sh` (update) ·
+    `docker compose -f /opt/swarmclaw/docker-compose.yml ps` (status) ·
+    `bash /opt/swarmclaw/scripts/healthcheck.sh` (health)
