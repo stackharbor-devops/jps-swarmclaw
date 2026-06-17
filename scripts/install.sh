@@ -136,6 +136,21 @@ obtain_scripts() {
   log "Helper scripts available in ${SCRIPTS_DIR}"
 }
 
+# Place docker-compose.override.yml next to the cloned compose file so Compose
+# merges it: publishes the app on host :80 (for the env URL / "Open in Browser")
+# and pins restart: unless-stopped.
+install_override() {
+  local dst="${APP_DIR}/docker-compose.override.yml"
+  if [ -n "$BASE_URL" ] && curl -fsSL "${BASE_URL}/docker-compose.override.yml" -o "$dst"; then
+    log "Installed docker-compose.override.yml (port 80 routing + restart policy)"
+  elif [ -f "${SELF_DIR}/docker-compose.override.yml" ]; then
+    cp "${SELF_DIR}/docker-compose.override.yml" "$dst"
+    log "Installed docker-compose.override.yml from package directory"
+  else
+    log "No override available — start.sh will ensure a restart policy"
+  fi
+}
+
 run_helper() {
   local f="${SCRIPTS_DIR}/$1"
   [ -f "$f" ] || die "missing helper script: $f"
@@ -149,6 +164,7 @@ main() {
   clone_or_update
   mkdir -p "${APP_DIR}/data"
   obtain_scripts
+  install_override
   run_helper generate-credentials.sh
   run_helper start.sh
   run_helper healthcheck.sh

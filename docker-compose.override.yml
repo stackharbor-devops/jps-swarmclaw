@@ -1,19 +1,19 @@
-# docker-compose.override.yml — REFERENCE TEMPLATE (Stack Harbor / SwarmClaw JPS)
+# docker-compose.override.yml — Stack Harbor / SwarmClaw JPS
 #
-# SwarmClaw's upstream docker-compose.yml already declares:
-#   * restart: unless-stopped
-#   * the ./data:/app/data volume
-#   * env_file: ./.env.local
-# so an override is normally NOT required for this package.
+# Installed to /opt/swarmclaw/docker-compose.override.yml by scripts/install.sh and
+# merged automatically by Docker Compose. It:
+#   * publishes the app on host port 80 so the Jelastic environment URL — what the
+#     dashboard "Open in Browser" button opens — reaches SwarmClaw (container :3456);
+#   * pins restart: unless-stopped so the app survives node reboots.
 #
-# scripts/start.sh inspects the merged compose config at deploy time and writes an
-# effective override to /opt/swarmclaw/docker-compose.override.yml ONLY if the
-# upstream file lacks a restart policy. That generated file sets a scalar `restart`
-# key per service and never re-declares volumes (re-declaring a bind mount would
-# trigger a "duplicate mount point" error when Compose merges the two files).
+# Only scalar keys plus an ADDITIVE port are set, so merging with the upstream
+# service definition cannot cause duplicate-mount errors. Upstream already maps
+# 3456:3456 and 3457:3457, so those host ports stay reachable too.
 #
-# This file is kept for reference / manual use. If you drop it next to the compose
-# file yourself, keep it scalar-only for the same reason.
+# If host port 80 is unavailable on your node, change "80:3456" (or remove it and
+# expose 3456 via a public IP / TCP Endpoint instead — see README).
 services:
   swarmclaw:
     restart: unless-stopped
+    ports:
+      - "80:3456"

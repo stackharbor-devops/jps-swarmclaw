@@ -41,6 +41,10 @@ have_compose_file() {
 # Add a restart-policy override ONLY when the upstream compose lacks one.
 # Override sets a scalar key per service (no volumes) to avoid duplicate-mount errors.
 ensure_restart_policy() {
+  if [ -f "${APP_DIR}/docker-compose.override.yml" ]; then
+    log "docker-compose.override.yml already present — keeping it"
+    return 0
+  fi
   if dc config 2>/dev/null | grep -qE '^[[:space:]]*restart:'; then
     log "Restart policy already declared by compose — no override needed"
     return 0

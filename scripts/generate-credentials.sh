@@ -2,10 +2,13 @@
 #
 # generate-credentials.sh — create & persist unique SwarmClaw credentials.
 #
-# Idempotent: if credentials already exist in .deployment-secrets they are reused
-# (so re-running install/update never rotates the customer's keys). Secrets are
-# generated with `openssl rand -base64 32` and written to two restrictive files:
+# Credential source priority:
+#   1. values supplied by the installer via SWARMCLAW_ACCESS_KEY /
+#      SWARMCLAW_CREDENTIAL_SECRET (the JPS platform-generated globals);
+#   2. values already present in .deployment-secrets (idempotent reruns);
+#   3. freshly generated with `openssl rand -base64 32` (manual/standalone runs).
 #
+# Writes two restrictive files:
 #   /opt/swarmclaw/.deployment-secrets  (authoritative store, chmod 600)
 #   /opt/swarmclaw/.env.local           (consumed by docker compose, chmod 600)
 #
@@ -20,10 +23,12 @@ ENV_FILE="${APP_DIR}/.env.local"
 log()  { printf '%s [swarmclaw] %s\n'        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 err()  { printf '%s [swarmclaw][ERROR] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 die()  { err "$*"; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
 # Generate a 32-byte secret, base64-encoded, no trailing newline.
-gen_secret() { openssl rand -base64 32 | tr -d '\r\n'; }
+gen_secret() {
+  command -v openssl >/dev/null 2>&1 || die "openssl is required to generate credentials"
+  openssl rand -base64 32 | tr -d '\r\n'
+}
 
 # read_kv <file> <key> -> prints value (text after the first '='), or fails.
 read_kv() {
@@ -44,16 +49,34 @@ set_kv() {
 }
 
 main() {
-  need openssl
   umask 077
   mkdir -p "$APP_DIR"
 
-  local access cred
-  access="$(read_kv "$SECRETS_FILE" ACCESS_KEY        || true)"
-  cred="$(read_kv   "$SECRETS_FILE" CREDENTIAL_SECRET || true)"
+  local access="" cred=""
 
-  if [ -z "${access:-}" ]; then access="$(gen_secret)"; log "Generated new ACCESS_KEY";        else log "Reusing existing ACCESS_KEY";        fi
-  if [ -z "${cred:-}"   ]; then cred="$(gen_secret)";   log "Generated new CREDENTIAL_SECRET"; else log "Reusing existing CREDENTIAL_SECRET"; fi
+  # 1) supplied by installer (platform-generated globals)
+  if [ -n "${SWARMCLAW_ACCESS_KEY:-}" ]; then
+    access="$SWARMCLAW_ACCESS_KEY"
+    log "Using ACCESS_KEY supplied by installer"
+  fi
+  if [ -n "${SWARMCLAW_CREDENTIAL_SECRET:-}" ]; then
+    cred="$SWARMCLAW_CREDENTIAL_SECRET"
+    log "Using CREDENTIAL_SECRET supplied by installer"
+  fi
+
+  # 2) existing on-disk values (keeps reruns idempotent)
+  if [ -z "$access" ]; then
+    access="$(read_kv "$SECRETS_FILE" ACCESS_KEY || true)"
+    if [ -n "$access" ]; then log "Reusing existing ACCESS_KEY"; fi
+  fi
+  if [ -z "$cred" ]; then
+    cred="$(read_kv "$SECRETS_FILE" CREDENTIAL_SECRET || true)"
+    if [ -n "$cred" ]; then log "Reusing existing CREDENTIAL_SECRET"; fi
+  fi
+
+  # 3) generate (manual/standalone runs)
+  if [ -z "$access" ]; then access="$(gen_secret)"; log "Generated ACCESS_KEY (openssl)"; fi
+  if [ -z "$cred"   ]; then cred="$(gen_secret)";   log "Generated CREDENTIAL_SECRET (openssl)"; fi
 
   # Authoritative secret store (rewritten cleanly each run; values are stable).
   {

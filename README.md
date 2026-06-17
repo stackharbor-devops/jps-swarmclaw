@@ -15,11 +15,11 @@ On import, the manifest:
 2. Ensures **Docker Engine + Compose**, `git`, `curl`, `openssl`, `ca-certificates`.
 3. Clones SwarmClaw into **`/opt/swarmclaw`**.
 4. Creates persistent **`/opt/swarmclaw/data`** and **`/opt/swarmclaw/.env.local`**.
-5. Generates **unique credentials** (`ACCESS_KEY`, `CREDENTIAL_SECRET`) with `openssl rand -base64 32`.
+5. Generates **unique credentials** (`ACCESS_KEY`, `CREDENTIAL_SECRET`) — platform-generated, with an `openssl` fallback.
 6. Stores them in **`/opt/swarmclaw/.deployment-secrets`** (`chmod 600`) and writes them to `.env.local` (`chmod 600`).
 7. Starts SwarmClaw with **Docker Compose** (`docker compose up -d --build`), using the repo's own compose file.
 8. Ensures the container **restarts after reboot** (`restart: unless-stopped`).
-9. Exposes SwarmClaw on **port 3456**.
+9. Exposes SwarmClaw via the **environment URL** (host `:80` → container `:3456`).
 10. **Health-checks** `http://127.0.0.1:3456/api/healthz`.
 11. **Emails** the customer the deployment details.
 12. Shows a **success panel** in the dashboard.
@@ -34,21 +34,22 @@ On import, the manifest:
   │                                                │
   │   nodeGroup: cp                                │
   │   ┌──────────────────────────────────────┐    │
-  │   │  Docker Engine node (public IPv4)     │    │
+  │   │  Docker Engine node                   │    │
   │   │                                        │    │
   │   │   /opt/swarmclaw  (git checkout)       │    │
   │   │     ├─ docker-compose.yml (upstream)   │    │
+  │   │     ├─ docker-compose.override.yml     │    │
   │   │     ├─ .env.local        (600)         │    │
   │   │     ├─ .deployment-secrets (600)       │    │
   │   │     ├─ data/             (persistent)  │    │
   │   │     └─ scripts/ (install/start/…)      │    │
   │   │                                        │    │
   │   │   docker compose ─► container          │    │
-  │   │      swarmclaw  :3456 (+3457)          │    │
+  │   │      swarmclaw  host :80 → :3456        │    │
   │   └──────────────────────────────────────┘    │
   └──────────────────────────────────────────────┘
             ▲
-            │  http://<public-ip>:3456
+            │  ${env.url}   (dashboard "Open in Browser" → host :80)
             └── customer browser
 ```
 
@@ -80,10 +81,10 @@ container, so the host OS version is irrelevant.
 |---|---|
 | **Node type** | `dockerengine` (Docker Engine CE). If unavailable, set `nodeType: vps` (Ubuntu); `install.sh` installs Docker/Compose itself. |
 | **`cmd` runs as root** | True on Docker Engine / VPS nodes. Scripts also fall back to `sudo -n`. |
-| **Public IPv4** | `extip: true` requests one so `http://<ip>:3456` works. Key may be `externalIp: true` on some versions. See *Exposing SwarmClaw* for a no-public-IP path. |
+| **Env URL routing** | The app is published on host `:80`; the environment URL / "Open in Browser" must route to the node on port 80 (default for a single-node env). See *Exposing SwarmClaw* for public-IP / Endpoint alternatives. |
 | **Outbound internet** | Needed to pull the SwarmClaw repo, base image and packages. |
 | **Email** | Sent via `message.email.Send` to `${user.email}`. Requires the platform's outgoing SMTP to be configured (default on most installs). |
-| **Public URL macro** | `${nodes.cp.first.extIPs[1]}` (alt: `${nodes.cp.first.extIP}`). |
+| **App URL macro** | `${env.url}` (always resolves; this is what the dashboard "Open in Browser" uses). |
 
 ---
 
@@ -96,10 +97,11 @@ honoured by the scripts (override in `manifest.jps` or when running manually):
 | Variable | Default | Purpose |
 |---|---|---|
 | `SWARMCLAW_APP_DIR` | `/opt/swarmclaw` | Install directory |
-| `SWARMCLAW_PORT` | `3456` | App port for health checks / URL |
+| `SWARMCLAW_PORT` | `3456` | Container app port (health checks) |
 | `SWARMCLAW_REPO_URL` | upstream repo | SwarmClaw git source |
 | `SWARMCLAW_BRANCH` | `main` (→ `master`) | Branch/ref to deploy |
 | `SWARMCLAW_BASE_URL` | — | Raw base URL of this package (script fetch) |
+| `SWARMCLAW_ACCESS_KEY` / `SWARMCLAW_CREDENTIAL_SECRET` | — | Pre-set credentials (the manifest passes the platform-generated globals here) |
 | `SWARMCLAW_NO_BUILD` | `0` | `1` = pull prebuilt image instead of building |
 | `SWARMCLAW_REF` | current branch | `update.sh`: ref to update to |
 
@@ -107,38 +109,47 @@ honoured by the scripts (override in `manifest.jps` or when running manually):
 
 ## Post-install access
 
-- **URL:** `http://<public-ip>:3456` (shown in the success panel and email).
+- **URL:** the **environment URL** (`${env.url}`), shown in the success panel and
+  email; the dashboard **Open in Browser** button opens it too.
 - **Access Key:** in the email, the success panel, and `/opt/swarmclaw/.deployment-secrets`.
 - Open the URL, authenticate with your **Access Key**, then configure providers,
   agents, Hermes Agent, tools, schedules and credentials in the SwarmClaw UI.
 
 ### Exposing SwarmClaw
 
-This package attaches a **public IPv4** and serves on `:3456` directly. If you cannot
-use a public IP, expose port 3456 through Jelastic **Endpoints** instead — replace
-`captureUrl` in the manifest with an API call and build the URL from its response:
+`docker-compose.override.yml` publishes the container on host **port 80**, so the
+single-node environment URL (port 80, via the platform resolver/SLB) reaches
+SwarmClaw — which also makes **Open in Browser** work. The container ports
+`3456`/`3457` remain published on the host as well.
 
-```yaml
-- api: environment.binder.AddEndPoint
-  nodeId: ${nodes.cp.first.id}
-  name: swarmclaw
-  privatePort: 3456
-  protocol: TCP
-- setGlobals:
-    SWARMCLAW_URL: http://${response.object.host}:${response.object.publicPort}
-```
+**Alternatives** if you need a fixed public `:3456`, or port 80 is taken on the node:
 
-If `:3456` is unreachable with a public IP, check the environment **Firewall**
-(add an inbound rule for TCP 3456).
+- **Public IP:** add `extip: true` to the node and use `http://<public-ip>:3456`
+  (open TCP 3456 in the environment **Firewall**). Public-IP / `extIPs` placeholder
+  support is version-dependent.
+- **TCP Endpoint:** map 3456 to a public port via the API:
+
+  ```yaml
+  - api: environment.binder.AddEndPoint
+    nodeId: ${nodes.cp.first.id}
+    name: swarmclaw
+    privatePort: 3456
+    protocol: TCP
+  ```
+
+> SwarmClaw also listens on **3457** (secondary). If a browser feature needs it and
+> you front the app on port 80 only, publish/route 3457 too.
 
 ---
 
 ## Credential handling
 
-- Generated **on the node** with `openssl rand -base64 32` — never hardcoded, never committed.
+- Generated by the platform (`${fn.password}`) and passed into the installer;
+  `generate-credentials.sh` falls back to `openssl rand -base64 32` for manual runs.
+  Never hardcoded, never committed.
 - Stored in `/opt/swarmclaw/.deployment-secrets` and `/opt/swarmclaw/.env.local`, both `chmod 600`.
 - `.gitignore` excludes `.env.local`, `.deployment-secrets`, `data/`.
-- **Idempotent:** re-running install/update reuses existing secrets — keys are not rotated.
+- **Idempotent:** re-running install/update reuses existing on-disk secrets — keys are not rotated.
 - Secrets are surfaced only in the final customer email and success output (the
   permitted exception); scripts otherwise never print secret values.
 - `CREDENTIAL_SECRET` is set explicitly in `.env.local`, which is the stable, first
@@ -180,17 +191,24 @@ cd /opt/swarmclaw
 
 docker compose ps                 # container status
 docker compose logs -f --tail=100 # follow logs
-docker compose config             # effective merged compose config
+docker compose config             # effective merged compose config (incl. override)
 
 bash scripts/healthcheck.sh       # probe :3456/api/healthz
 curl -i http://127.0.0.1:3456/api/healthz
+curl -i http://127.0.0.1:80/      # verify the host :80 → :3456 publish
 
-cat /var/log/swarmclaw-install.log   # full install log (from the JPS bootstrap)
+cat /var/log/swarmclaw-install.log   # full install log (redirected here from the JPS bootstrap)
 systemctl status docker              # docker daemon
 ```
 
-If the build is killed (OOM), raise `flexibleCloudlets` on the node or set
-`SWARMCLAW_NO_BUILD=1` to pull the prebuilt image.
+- **Install fails with `org.hibernate.exception.DataException`:** the install command
+  must not stream large output back to the platform — this package redirects it to
+  `/var/log/swarmclaw-install.log` and returns only a status line. If you customise the
+  manifest, keep the `cmd` output small.
+- **Port 80 already allocated:** another container/service holds host :80. Change
+  `"80:3456"` in `docker-compose.override.yml`, or use a public IP / Endpoint instead.
+- If the build is killed (OOM), raise `flexibleCloudlets` on the node or set
+  `SWARMCLAW_NO_BUILD=1` to pull the prebuilt image.
 
 ---
 
@@ -209,7 +227,7 @@ If the build is killed (OOM), raise `flexibleCloudlets` on the node or set
 .
 ├── manifest.jps                  # JPS manifest (import this)
 ├── README.md
-├── docker-compose.override.yml   # reference template (restart policy)
+├── docker-compose.override.yml   # installed to node: host :80 routing + restart policy
 ├── .gitignore
 └── scripts/
     ├── install.sh                # full first-time deploy (orchestrator)
@@ -219,8 +237,8 @@ If the build is killed (OOM), raise `flexibleCloudlets` on the node or set
     └── update.sh                 # pull + rebuild + restart + health
 ```
 
-On the node (`/opt/swarmclaw`): the SwarmClaw checkout plus `.env.local` (600),
-`.deployment-secrets` (600), `data/` (persistent) and `scripts/`.
+On the node (`/opt/swarmclaw`): the SwarmClaw checkout plus `docker-compose.override.yml`,
+`.env.local` (600), `.deployment-secrets` (600), `data/` (persistent) and `scripts/`.
 
 ---
 
@@ -228,8 +246,9 @@ On the node (`/opt/swarmclaw`): the SwarmClaw checkout plus `.env.local` (600),
 
 - **Single node, no HA (v1).** No clustering, load balancing or failover.
 - **Vertical scaling only** via node cloudlets.
-- **Public IP exposure.** Uses a public IPv4 + raw `:3456`. No TLS/custom domain
-  out of the box — front it with a reverse proxy / Let's Encrypt add-on for HTTPS.
+- **Plain HTTP on port 80.** Served over the environment URL without TLS/custom
+  domain out of the box — front it with a reverse proxy / Let's Encrypt add-on for
+  HTTPS. Routing assumes the env URL reaches the node on port 80 (true for a single-node env).
 - **Persistence is node-local.** `data/` lives on the node's disk (survives reboots
   and container recreation), but is not replicated off-node — snapshot/back up `data/`.
 - **Hermes Agent is not auto-deployed** (see below).
@@ -263,3 +282,5 @@ deployed instance is ready for that configuration; no extra package steps are ne
 - JPS style modelled on [`jelastic-jps/wordpress-cluster`](https://github.com/jelastic-jps/wordpress-cluster)
   and [`jelastic-jps/minio`](https://github.com/jelastic-jps/minio).
 - Packaged by **Stack Harbor**.
+```
+
