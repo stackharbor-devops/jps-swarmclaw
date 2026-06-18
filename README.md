@@ -17,7 +17,7 @@ On import, the manifest:
 4. Creates persistent **`/opt/swarmclaw/data`** and **`/opt/swarmclaw/.env.local`**.
 5. Generates **unique credentials** (`ACCESS_KEY`, `CREDENTIAL_SECRET`) — platform-generated, with an `openssl` fallback.
 6. Stores them in **`/opt/swarmclaw/.deployment-secrets`** (`chmod 600`) and writes them to `.env.local` (`chmod 600`).
-7. Starts SwarmClaw with **Docker Compose** (`docker compose up -d --build`), using the repo's own compose file.
+7. Starts SwarmClaw with **Docker Compose** (`docker compose up -d --build`), using the repo's own compose file, and installs the **Claude Code** + **OpenAI Codex** provider CLIs into the container.
 8. Ensures the container **restarts after reboot** (`restart: unless-stopped`).
 9. Exposes SwarmClaw via the **environment URL** (host `:80` → container `:3456`).
 10. **Health-checks** `http://127.0.0.1:3456/api/healthz`.
@@ -103,6 +103,8 @@ honoured by the scripts (override in `manifest.jps` or when running manually):
 | `SWARMCLAW_BASE_URL` | — | Raw base URL of this package (script fetch) |
 | `SWARMCLAW_ACCESS_KEY` / `SWARMCLAW_CREDENTIAL_SECRET` | — | Pre-set credentials (the manifest passes the platform-generated globals here) |
 | `SWARMCLAW_NO_BUILD` | `0` | `1` = pull prebuilt image instead of building |
+| `SWARMCLAW_INSTALL_CLIS` | `1` | Install provider CLIs in the container (`0` to skip) |
+| `SWARMCLAW_CLI_SPECS` | `@anthropic-ai/claude-code:claude @openai/codex:codex` | `pkg:binary` list of CLIs to install |
 | `SWARMCLAW_REF` | current branch | `update.sh`: ref to update to |
 
 ---
@@ -139,6 +141,34 @@ SwarmClaw — which also makes **Open in Browser** work. The container ports
 
 > SwarmClaw also listens on **3457** (secondary). If a browser feature needs it and
 > you front the app on port 80 only, publish/route 3457 too.
+
+---
+
+## Default AI providers
+
+Every deployment pre-installs two CLI-based providers inside the container so the
+default **Assistant** agent (and any `claude-code` / `codex` agent) works without
+manual setup:
+
+- **Claude Code** — `@anthropic-ai/claude-code` (`claude`)
+- **OpenAI Codex** — `@openai/codex` (`codex`)
+
+`start.sh` installs them on every deploy — idempotent, best-effort (a failure never
+breaks the app). Toggle with `SWARMCLAW_INSTALL_CLIS=0`; customise the list with
+`SWARMCLAW_CLI_SPECS`.
+
+> **Credentials are still required.** Installing the CLIs fixes *"Claude CLI not
+> found"*, but each backend needs auth before it answers. Add an API key in the
+> SwarmClaw UI (**Providers / Secrets**), or set it in `/opt/swarmclaw/.env.local`
+> (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) then `docker compose restart`. SwarmClaw's
+> built-in **OpenAI / Anthropic _API_ providers** need only a key (no CLI).
+
+**Add the CLIs to an already-running instance** (no redeploy needed):
+
+```bash
+docker compose -f /opt/swarmclaw/docker-compose.yml exec -u root -T \
+  swarmclaw npm install -g @anthropic-ai/claude-code @openai/codex
+```
 
 ---
 

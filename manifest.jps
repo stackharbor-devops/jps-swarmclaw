@@ -11,7 +11,7 @@
 #  file, so the platform can fetch scripts/*.sh during installation.
 # =============================================================================
 type: install
-version: "1.0.1"
+version: "1.0.2"
 name: SwarmClaw
 id: swarmclaw
 
@@ -144,6 +144,10 @@ success:
     **Next:** open the URL (or click **Open in Browser**), authenticate with your
     Access Key, then configure providers, agents, **Hermes Agent**, tools and
     schedules from the SwarmClaw UI.
+
+    The **Claude Code** (`claude`) and **OpenAI Codex** (`codex`) CLIs are
+    pre-installed in the container. Add an **Anthropic** or **OpenAI** API key in
+    **Providers / Secrets** (or `/opt/swarmclaw/.env.local`) so the agents can run.
 
     **On the node (`/opt/swarmclaw`):**
     - `.env.local` — runtime config incl. Access Key & Credential Secret (`chmod 600`)

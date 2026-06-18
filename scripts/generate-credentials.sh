@@ -48,6 +48,20 @@ set_kv() {
   mv "$tmp" "$f"
 }
 
+# Append commented provider-key hints to .env.local (once) so users know where
+# to put their Anthropic/OpenAI credentials for the bundled CLIs.
+ensure_provider_hints() {
+  if grep -q 'PROVIDER API KEYS' "$ENV_FILE" 2>/dev/null; then return 0; fi
+  cat >> "$ENV_FILE" <<'HINTS'
+
+# --- PROVIDER API KEYS (optional) -------------------------------------------
+# The bundled Claude Code (claude) and OpenAI Codex (codex) CLIs need creds to
+# run. Set them here, or in the SwarmClaw UI (Providers / Secrets), then restart.
+# ANTHROPIC_API_KEY=
+# OPENAI_API_KEY=
+HINTS
+}
+
 main() {
   umask 077
   mkdir -p "$APP_DIR"
@@ -92,6 +106,7 @@ main() {
   touch "$ENV_FILE"
   set_kv "$ENV_FILE" ACCESS_KEY        "$access"
   set_kv "$ENV_FILE" CREDENTIAL_SECRET "$cred"
+  ensure_provider_hints
   chmod 600 "$ENV_FILE"
 
   log "Credentials ready (${SECRETS_FILE} [600], ${ENV_FILE} [600])"

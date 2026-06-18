@@ -12,6 +12,13 @@ set -euo pipefail
 
 APP_DIR="${SWARMCLAW_APP_DIR:-/opt/swarmclaw}"
 PORT="${SWARMCLAW_PORT:-3456}"
+SWARMCLAW_SERVICE="${SWARMCLAW_SERVICE:-swarmclaw}"
+
+# Provider CLIs installed inside the container by default so the bundled
+# claude-code / codex providers work out of the box. Format: "pkg:binary".
+# Disable with SWARMCLAW_INSTALL_CLIS=0; customise with SWARMCLAW_CLI_SPECS.
+SWARMCLAW_INSTALL_CLIS="${SWARMCLAW_INSTALL_CLIS:-1}"
+SWARMCLAW_CLI_SPECS="${SWARMCLAW_CLI_SPECS:-@anthropic-ai/claude-code:claude @openai/codex:codex}"
 
 log()  { printf '%s [swarmclaw] %s\n'        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 err()  { printf '%s [swarmclaw][ERROR] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -60,6 +67,31 @@ ensure_restart_policy() {
   } > "${APP_DIR}/docker-compose.override.yml"
 }
 
+# Install the provider CLIs (Claude Code, OpenAI Codex) inside the running
+# container so the claude-code / codex agent providers work by default.
+# Best-effort and idempotent: never fails the deploy; skips packages already present.
+install_provider_clis() {
+  if [ "$SWARMCLAW_INSTALL_CLIS" != "1" ]; then
+    log "Provider CLI install disabled (SWARMCLAW_INSTALL_CLIS=0)"
+    return 0
+  fi
+  log "Ensuring provider CLIs in container '${SWARMCLAW_SERVICE}': ${SWARMCLAW_CLI_SPECS}"
+  # shellcheck disable=SC2086  -- intentional word-splitting of the spec list
+  dc exec -u root -T "$SWARMCLAW_SERVICE" sh -s -- $SWARMCLAW_CLI_SPECS <<'INCONTAINER' || log "Provider CLI install skipped (container not ready or npm unavailable)"
+command -v npm >/dev/null 2>&1 || { echo "[cli] npm not found in container; skipping"; exit 0; }
+for spec in "$@"; do
+  pkg=${spec%%:*}; bin=${spec##*:}
+  if command -v "$bin" >/dev/null 2>&1; then
+    echo "[cli] already present: $bin"
+  elif npm install -g "$pkg" >/dev/null 2>&1; then
+    echo "[cli] installed: $pkg"
+  else
+    echo "[cli] WARN: could not install $pkg"
+  fi
+done
+INCONTAINER
+}
+
 main() {
   need docker
   [ -d "$APP_DIR" ] || die "app directory not found: ${APP_DIR} (run install.sh first)"
@@ -88,6 +120,9 @@ main() {
 
   log "Current containers:"
   dc ps || true
+
+  install_provider_clis
+
   log "SwarmClaw should be listening on port ${PORT}"
 }
 
